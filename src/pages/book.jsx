@@ -58,41 +58,60 @@ function BookPage() {
     setSavedChapters(JSON.parse(localStorage.getItem('savedChapters')) || []);
   }, []);
 
-  const fetchImage = async (imgSrc) => {
-    const response = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(imgSrc)}`);
-    if (!response.ok) {
-      throw new Error('Image fetch failed');
-    }
-    return response.blob();
-  };
 
   const [chapterImages, setChapterImages] = useState([]);
 
-  const fetchChapterImages = async (chapter) => {
-    const images = await Promise.all(
-      chapter.images.map(async (imgSrc, index) => {
-        try {
-          const imageBlob = await fetchImage(imgSrc);
-          return {
-            src: URL.createObjectURL(imageBlob),
-            type: 'image',
-            caption: `Chapter ${chapter.number} - Image ${index + 1}`,
-          };
-        } catch (error) {
-          console.error('Image fetch failed', error);
-          return null;
-        }
-      })
-    );
-    return images.filter(image => image !== null);
+  const imageCache = new Map();
+
+  const fetchImageWithRetry = async (imgSrc, retries = 2, delay = 500) => {
+    if (imageCache.has(imgSrc)) {
+      return imageCache.get(imgSrc);
+    }
+
+    try {
+      const response = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(imgSrc)}`);
+      if (!response.ok) {
+        throw new Error('Image fetch failed');
+      }
+      const imageBlob = await response.blob();
+
+      imageCache.set(imgSrc, imageBlob);
+
+      return imageBlob;
+    } catch (error) {
+      if (retries > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return fetchImageWithRetry(imgSrc, retries - 1, delay * 2);
+      }
+      throw error;
+    }
+  };
+
+  const fetchChapterImagesWithRetry = async (chapter) => {
+    const images = [];
+
+    for (let i = 0; i < chapter.images.length; i++) {
+      try {
+        const imageBlob = await fetchImageWithRetry(chapter.images[i]);
+        images.push({
+          src: URL.createObjectURL(imageBlob),
+          type: 'image',
+          caption: `Chapter ${chapter.number} - Image ${i + 1}`,
+        });
+      } catch (error) {
+        console.error('Failed to fetch image', error);
+      }
+    }
+
+    return images;
   };
 
   const [loadingChapter, setLoadingChapter] = useState(null);
 
   const handleChapterClick = async (chapter) => {
-    setLoadingChapter(chapter.number); // Set the chapter as loading
+    setLoadingChapter(chapter.number);
 
-    const images = await fetchChapterImages(chapter);
+    const images = await fetchChapterImagesWithRetry(chapter);
     setChapterImages(images);
     Fancybox.show(images);
 
