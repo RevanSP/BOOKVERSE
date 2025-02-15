@@ -10,6 +10,40 @@ import "@fancyapps/ui/dist/fancybox/fancybox.css";
 const fetchMangaData = async () => {
   const collections = ['manga', 'manhua', 'manhwa'];
   const data = await Promise.all(collections.map((name) => fetch(`/data/${name}.json`).then((res) => res.json())));
+
+  const fetchImageWithFallback = async (imageUrl) => {
+    const proxyUrls = [
+      `https://proxy-cloudflare-server.revanspstudy28.workers.dev/api/proxy?url=${encodeURIComponent(imageUrl)}`,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(imageUrl)}`
+    ];
+
+    let attempts = 0;
+    const maxAttempts = 2;
+
+    while (attempts < maxAttempts) {
+      try {
+        const response = await fetch(proxyUrls[attempts]);
+        if (!response.ok) throw new Error('Failed to fetch image');
+
+        return proxyUrls[attempts];
+      } catch (error) {
+        attempts++;
+        if (attempts >= maxAttempts) throw new Error('Both proxies failed');
+      }
+    }
+  };
+
+  data.forEach((mangaList) => {
+    mangaList.forEach(async (manga) => {
+      try {
+        const proxyImageUrl = await fetchImageWithFallback(manga.imageUrl);
+        manga.imageUrl = proxyImageUrl;
+      } catch (error) {
+        console.error('Error fetching image:', error);
+      }
+    });
+  });
+
   return data.flat().sort((a, b) => parseFloat(a.number) - parseFloat(b.number) || a.title.localeCompare(b.title));
 };
 
@@ -68,22 +102,35 @@ function BookPage() {
       return imageCache.get(imgSrc);
     }
 
-    try {
-      const response = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(imgSrc)}`);
+    const fetchWithProxy = async (url) => {
+      const response = await fetch(url);
       if (!response.ok) {
         throw new Error('Image fetch failed');
       }
-      const imageBlob = await response.blob();
+      return await response.blob();
+    };
 
-      imageCache.set(imgSrc, imageBlob);
+    const proxyUrls = [
+      `https://proxy-cloudflare-server.revanspstudy28.workers.dev/api/proxy?url=${encodeURIComponent(imgSrc)}`,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(imgSrc)}`
+    ];
 
-      return imageBlob;
-    } catch (error) {
-      if (retries > 0) {
+    let currentProxyIndex = 0;
+    let attempts = 0;
+
+    while (attempts < 2 * retries) {
+      try {
+        const imageBlob = await fetchWithProxy(proxyUrls[currentProxyIndex]);
+        imageCache.set(imgSrc, imageBlob);
+        return imageBlob;
+      } catch (error) {
+        currentProxyIndex = (currentProxyIndex + 1) % 2;
+        attempts++;
+        if (attempts >= 2 * retries) {
+          throw new Error('Both proxies failed after retries');
+        }
         await new Promise(resolve => setTimeout(resolve, delay));
-        return fetchImageWithRetry(imgSrc, retries - 1, delay * 2);
       }
-      throw error;
     }
   };
 
